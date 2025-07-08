@@ -1,0 +1,403 @@
+import pandas as pd
+
+# Paths
+INPUT_CSV  = r'GlobalWeatherRepository.csv'
+OUTPUT_CSV = r'weather_clean.csv'
+
+# 1. Load only the needed columns
+use_cols = [
+    'last_updated',           # timestamp
+    'temperature_celsius',    # °C
+    'humidity',               # %
+    'pressure_mb',            # hPa
+    'wind_kph',               # km/h
+    'precip_mm'               # mm
+]
+df = pd.read_csv(
+    INPUT_CSV,
+    usecols=use_cols,
+    parse_dates=['last_updated'],
+    dayfirst=False
+)
+
+# 2. Rename for your analyzer
+df = df.rename(columns={
+    'last_updated':        'datetime',
+    'temperature_celsius': 'temperature',
+    'pressure_mb':         'pressure',
+    'wind_kph':            'wind_speed',
+    'precip_mm':           'precipitation'
+})
+
+# 3. Basic cleaning
+
+# 3a. Drop exact duplicates
+df = df.drop_duplicates(subset=['datetime'])
+
+# 3b. Clip to realistic ranges
+df['humidity']      = df['humidity'].clip(0, 100)
+df['temperature']   = df['temperature'].clip(-50, 60)   # plausible earth surface range
+df['pressure']      = df['pressure'].clip(800, 1100)    # typical sea-level range
+df['wind_speed']    = df['wind_speed'].clip(0, None)    # no negative speeds
+df['precipitation'] = df['precipitation'].clip(0, None) # no negative precip
+
+# 3c. Sort by datetime and forward-fill small gaps
+df = df.sort_values('datetime')
+df = df.set_index('datetime')
+df = df.ffill(limit=1)  # only fill single missing hours
+
+# 3d. Drop any remaining rows with NaNs
+df = df.dropna()
+
+# 4. Derive binary rain flag
+df['rain'] = (df['precipitation'] > 0).astype(int)
+
+# 5. Select+reorder final columns
+df_final = df[['temperature', 'humidity', 'pressure', 'wind_speed', 'rain']]
+
+# 6. Save cleaned data
+df_final.to_csv(OUTPUT_CSV)
+print(f"Cleaned data saved to:\n  {OUTPUT_CSV}")
+
+6.4.2. Data Analysis Code
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# Set style for better plots
+plt.style.use('seaborn-v0_8')
+sns.set_palette("husl")
+
+
+class WeatherProbabilityAnalysis:
+    def __init__(self, data_path=None):
+        """
+        Initialize the weather probability analysis
+        If no data_path provided, generates sample data
+        """
+        if data_path:
+            self.df = pd.read_csv(data_path)
+        else:
+            self.df = self.generate_sample_weather_data()
+
+        self.prepare_data()
+
+    def generate_sample_weather_data(self, n_samples=1000):
+        """
+        Generate sample weather data for demonstration
+        You can replace this with your actual dataset
+        """
+        np.random.seed(42)
+
+        # Generate correlated weather variables
+        temperature = np.random.normal(25, 8, n_samples)  # Celsius
+        humidity = 30 + 0.8 * temperature + np.random.normal(0, 10, n_samples)
+        humidity = np.clip(humidity, 20, 95)  # Realistic humidity range
+
+        pressure = 1013 + np.random.normal(0, 15, n_samples)  # hPa
+        wind_speed = np.random.exponential(8, n_samples)  # km/h
+
+        # Create rain probability based on conditions
+        rain_prob = (
+                0.3 * (humidity > 70).astype(int) +
+                0.2 * (temperature < 20).astype(int) +
+                0.1 * (pressure < 1010).astype(int) +
+                0.1 * (wind_speed > 15).astype(int) +
+                np.random.normal(0, 0.1, n_samples)
+        )
+        rain_prob = np.clip(rain_prob, 0, 1)
+        rain = (rain_prob > 0.4).astype(int)
+
+        return pd.DataFrame({
+            'temperature': temperature,
+            'humidity': humidity,
+            'pressure': pressure,
+            'wind_speed': wind_speed,
+            'rain': rain
+        })
+
+    def prepare_data(self):
+        """Prepare data for analysis"""
+        # Create categorical variables for conditional probability
+        self.df['temp_category'] = pd.cut(self.df['temperature'],
+                                          bins=3, labels=['Cold', 'Moderate', 'Hot'])
+        self.df['humidity_category'] = pd.cut(self.df['humidity'],
+                                              bins=3, labels=['Low', 'Medium', 'High'])
+
+        # Remove any missing values
+        self.df = self.df.dropna()
+
+    def descriptive_statistics(self):
+        """Calculate all required descriptive statistics"""
+        print("=" * 60)
+        print("DESCRIPTIVE STATISTICS")
+        print("=" * 60)
+
+        stats_dict = {}
+
+        for column in ['temperature', 'humidity', 'pressure', 'wind_speed']:
+            data = self.df[column]
+
+            stats_dict[column] = {
+                'mean': np.mean(data),
+                'median': np.median(data),
+                'mode': stats.mode(data)[0],
+                'variance': np.var(data, ddof=1),
+                'std_dev': np.std(data, ddof=1),
+                'q1': np.percentile(data, 25),
+                'q3': np.percentile(data, 75),
+                'p10': np.percentile(data, 10),
+                'p90': np.percentile(data, 90),
+                'iqr': np.percentile(data, 75) - np.percentile(data, 25)
+            }
+
+            print(f"\n{column.upper()}:")
+            print(f"Mean: {stats_dict[column]['mean']:.2f}")
+            print(f"Median: {stats_dict[column]['median']:.2f}")
+            print(f"Mode: {stats_dict[column]['mode']:.2f}")
+            print(f"Variance: {stats_dict[column]['variance']:.2f}")
+            print(f"Standard Deviation: {stats_dict[column]['std_dev']:.2f}")
+            print(f"Q1 (25th percentile): {stats_dict[column]['q1']:.2f}")
+            print(f"Q3 (75th percentile): {stats_dict[column]['q3']:.2f}")
+            print(f"10th percentile: {stats_dict[column]['p10']:.2f}")
+            print(f"90th percentile: {stats_dict[column]['p90']:.2f}")
+            print(f"IQR: {stats_dict[column]['iqr']:.2f}")
+
+        return stats_dict
+
+    def correlation_analysis(self):
+        """Calculate correlation coefficients"""
+        print("\n" + "=" * 60)
+        print("CORRELATION ANALYSIS")
+        print("=" * 60)
+
+        # Numerical columns for correlation
+        num_cols = ['temperature', 'humidity', 'pressure', 'wind_speed', 'rain']
+        corr_matrix = self.df[num_cols].corr()
+
+        print("\nCorrelation Matrix:")
+        print(corr_matrix.round(3))
+
+        # Specific correlations with rain
+        print(f"\nCorrelations with Rain:")
+        for col in num_cols[:-1]:
+            corr_val = corr_matrix.loc['rain', col]
+            print(f"{col} - Rain: {corr_val:.3f}")
+
+        return corr_matrix
+
+    def probability_analysis(self):
+        """Calculate probabilities and conditional probabilities"""
+        print("\n" + "=" * 60)
+        print("PROBABILITY ANALYSIS")
+        print("=" * 60)
+
+        # Basic probability of rain
+        p_rain = self.df['rain'].mean()
+        print(f"P(Rain) = {p_rain:.3f}")
+
+        # Conditional probabilities
+        print(f"\nConditional Probabilities:")
+
+        # P(Rain | High Humidity)
+        high_humidity_mask = self.df['humidity_category'] == 'High'
+        p_rain_given_high_humidity = self.df[high_humidity_mask]['rain'].mean()
+        print(f"P(Rain | High Humidity) = {p_rain_given_high_humidity:.3f}")
+
+        # P(Rain | Cold Temperature)
+        cold_temp_mask = self.df['temp_category'] == 'Cold'
+        p_rain_given_cold = self.df[cold_temp_mask]['rain'].mean()
+        print(f"P(Rain | Cold Temperature) = {p_rain_given_cold:.3f}")
+
+        # P(Rain | High Humidity AND Cold Temperature)
+        combined_mask = high_humidity_mask & cold_temp_mask
+        if combined_mask.sum() > 0:
+            p_rain_given_both = self.df[combined_mask]['rain'].mean()
+            print(f"P(Rain | High Humidity AND Cold) = {p_rain_given_both:.3f}")
+
+        # Bayes' Theorem example
+        # P(High Humidity | Rain)
+        rain_mask = self.df['rain'] == 1
+        p_high_humidity_given_rain = (self.df[rain_mask]['humidity_category'] == 'High').mean()
+        print(f"P(High Humidity | Rain) = {p_high_humidity_given_rain:.3f}")
+
+        return {
+            'p_rain': p_rain,
+            'p_rain_given_high_humidity': p_rain_given_high_humidity,
+            'p_rain_given_cold': p_rain_given_cold,
+            'p_high_humidity_given_rain': p_high_humidity_given_rain
+        }
+
+    def create_histograms(self):
+        """Create approximately normal histograms for all variables"""
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig.suptitle('Distribution of Weather Variables', fontsize=16, fontweight='bold')
+
+        variables = ['temperature', 'humidity', 'pressure', 'wind_speed']
+
+        for i, var in enumerate(variables):
+            row, col = i // 2, i % 2
+            ax = axes[row, col]
+
+            # Histogram with normal curve overlay
+            data = self.df[var]
+            ax.hist(data, bins=30, density=True, alpha=0.7, color='skyblue', edgecolor='black')
+
+            # Overlay normal distribution
+            mu, sigma = np.mean(data), np.std(data)
+            x = np.linspace(data.min(), data.max(), 100)
+            normal_curve = stats.norm.pdf(x, mu, sigma)
+            ax.plot(x, normal_curve, 'r-', linewidth=2, label=f'Normal (μ={mu:.1f}, σ={sigma:.1f})')
+
+            ax.set_title(f'{var.replace("_", " ").title()} Distribution', fontweight='bold')
+            ax.set_xlabel(var.replace("_", " ").title())
+            ax.set_ylabel('Density')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    def create_correlation_heatmap(self):
+        """Create correlation heatmap"""
+        plt.figure(figsize=(10, 8))
+
+        num_cols = ['temperature', 'humidity', 'pressure', 'wind_speed', 'rain']
+        corr_matrix = self.df[num_cols].corr()
+
+        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0,
+                    square=True, fmt='.3f', cbar_kws={'label': 'Correlation Coefficient'})
+
+        plt.title('Weather Variables Correlation Matrix', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+
+    def create_probability_visualizations(self):
+        """Create probability and conditional probability visualizations"""
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig.suptitle('Probability Analysis Visualizations', fontsize=16, fontweight='bold')
+
+        # 1. Rain probability by temperature category
+        temp_rain_prob = self.df.groupby('temp_category')['rain'].mean()
+        axes[0, 0].bar(temp_rain_prob.index, temp_rain_prob.values, color='lightcoral')
+        axes[0, 0].set_title('P(Rain | Temperature Category)')
+        axes[0, 0].set_ylabel('Probability of Rain')
+        axes[0, 0].set_ylim(0, 1)
+
+        # Add value labels on bars
+        for i, v in enumerate(temp_rain_prob.values):
+            axes[0, 0].text(i, v + 0.02, f'{v:.3f}', ha='center', fontweight='bold')
+
+        # 2. Rain probability by humidity category
+        humidity_rain_prob = self.df.groupby('humidity_category')['rain'].mean()
+        axes[0, 1].bar(humidity_rain_prob.index, humidity_rain_prob.values, color='lightblue')
+        axes[0, 1].set_title('P(Rain | Humidity Category)')
+        axes[0, 1].set_ylabel('Probability of Rain')
+        axes[0, 1].set_ylim(0, 1)
+
+        for i, v in enumerate(humidity_rain_prob.values):
+            axes[0, 1].text(i, v + 0.02, f'{v:.3f}', ha='center', fontweight='bold')
+
+        # 3. Scatter plot: Temperature vs Humidity colored by Rain
+        scatter = axes[1, 0].scatter(self.df['temperature'], self.df['humidity'],
+                                     c=self.df['rain'], cmap='RdYlBu', alpha=0.6)
+        axes[1, 0].set_xlabel('Temperature (°C)')
+        axes[1, 0].set_ylabel('Humidity (%)')
+        axes[1, 0].set_title('Temperature vs Humidity (Rain Occurrence)')
+        plt.colorbar(scatter, ax=axes[1, 0], label='Rain (0=No, 1=Yes)')
+
+        # 4. Box plot: Humidity distribution by rain occurrence
+        rain_labels = ['No Rain', 'Rain']
+        humidity_by_rain = [self.df[self.df['rain'] == 0]['humidity'],
+                            self.df[self.df['rain'] == 1]['humidity']]
+
+        box_plot = axes[1, 1].boxplot(humidity_by_rain, labels=rain_labels, patch_artist=True)
+        colors = ['lightgreen', 'orange']
+        for patch, color in zip(box_plot['boxes'], colors):
+            patch.set_facecolor(color)
+
+        axes[1, 1].set_title('Humidity Distribution by Rain Occurrence')
+        axes[1, 1].set_ylabel('Humidity (%)')
+
+        plt.tight_layout()
+        plt.show()
+
+    def generate_summary_report(self):
+        """Generate a summary report of findings"""
+        print("\n" + "=" * 60)
+        print("SUMMARY REPORT")
+        print("=" * 60)
+
+        prob_results = self.probability_analysis()
+
+        print(f"\nKey Findings:")
+        print(f"1. Overall probability of rain: {prob_results['p_rain']:.1%}")
+        print(
+            f"2. Rain is {prob_results['p_rain_given_high_humidity'] / prob_results['p_rain']:.1f}x more likely with high humidity")
+        print(
+            f"3. Rain is {prob_results['p_rain_given_cold'] / prob_results['p_rain']:.1f}x more likely in cold conditions")
+
+        # Temperature-Rain correlation
+        temp_rain_corr = self.df['temperature'].corr(self.df['rain'])
+        humidity_rain_corr = self.df['humidity'].corr(self.df['rain'])
+
+        print(f"4. Temperature-Rain correlation: {temp_rain_corr:.3f}")
+        print(f"5. Humidity-Rain correlation: {humidity_rain_corr:.3f}")
+
+        print(f"\nPredictive Insights:")
+        if humidity_rain_corr > 0.3:
+            print("- Humidity is a strong predictor of rain")
+        if abs(temp_rain_corr) > 0.2:
+            print("- Temperature shows significant relationship with rain occurrence")
+
+        print(f"\nRecommendations for Weather Prediction:")
+        print("- Focus on humidity levels as primary indicator")
+        print("- Consider temperature thresholds for seasonal predictions")
+        print("- Combine multiple weather variables for better accuracy")
+
+
+def main():
+    """
+    Main function to run the complete analysis
+
+    To use with your own dataset:
+    analyzer = WeatherProbabilityAnalysis('your_weather_data.csv')
+    """
+
+    print("Weather Probability Analysis")
+    print("=" * 60)
+
+    # Initialize analyzer (uses sample data if no file provided)
+    analyzer = WeatherProbabilityAnalysis("weather_clean.csv")
+
+    # Run complete analysis
+    print("Running descriptive statistics...")
+    stats_results = analyzer.descriptive_statistics()
+
+    print("\nCalculating correlations...")
+    corr_results = analyzer.correlation_analysis()
+
+    print("\nAnalyzing probabilities...")
+    prob_results = analyzer.probability_analysis()
+
+    print("\nGenerating visualizations...")
+    analyzer.create_histograms()
+    analyzer.create_correlation_heatmap()
+    analyzer.create_probability_visualizations()
+
+    print("\nGenerating summary report...")
+    analyzer.generate_summary_report()
+
+    print("\n" + "=" * 60)
+    print("ANALYSIS COMPLETE!")
+    print("All required statistics and visualizations have been generated.")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
